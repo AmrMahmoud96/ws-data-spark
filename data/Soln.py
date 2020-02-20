@@ -1,4 +1,4 @@
-from math import radians, cos, sin, asin, sqrt, pi
+from math import radians, cos, sin, asin, sqrt, pi, exp
 from pyspark.sql.types import DoubleType
 from pyspark.sql.functions import udf, mean as _mean, stddev as _stddev, col, desc,collect_set,count
 from collections import defaultdict
@@ -11,6 +11,10 @@ sc = SparkContext('local')
 sc.setLogLevel("ERROR")
 spark = SparkSession(sc)
 
+
+def sigmoid(x):
+    """Applies sigmoid function for a given value x."""
+    return 1 / (1 + exp(-x))
 
 def readF(filepath):
     """Reads the file at the specified filepath.
@@ -139,165 +143,154 @@ def findPath(originalStartPoints,end,completed,dependencies,topStart,allTasks):
 
 
 
-# if __name__ == "__main__":
+if __name__ == "__main__":
 
-# read csv to DataFrame objects
-df = spark.read.format('csv').options(header='true', inferSchema='true').load('/tmp/data/DataSample.csv')
-poi = spark.read.format('csv').options(header='true', inferSchema='true').load('/tmp/data/POIList.csv')
+    # read csv to DataFrame objects
+    df = spark.read.format('csv').options(header='true', inferSchema='true').load('/tmp/data/DataSample.csv')
+    poi = spark.read.format('csv').options(header='true', inferSchema='true').load('/tmp/data/POIList.csv')
 
-#rename POI lat/long columns to avoid confusion in SQL join
-poi = poi.withColumnRenamed(" Latitude","pLat").withColumnRenamed("Longitude","pLong")
+    #rename POI lat/long columns to avoid confusion in SQL join
+    poi = poi.withColumnRenamed(" Latitude","pLat").withColumnRenamed("Longitude","pLong")
 
-###### CLEANUP #####
-# drop duplicate timestamps and geoinfo
-df=df.dropDuplicates([' TimeSt', 'Latitude','Longitude'])
-poi=poi.dropDuplicates(['pLat','pLong'])
+    ###### CLEANUP #####
+    # drop duplicate timestamps and geoinfo
+    df=df.dropDuplicates([' TimeSt', 'Latitude','Longitude'])
+    poi=poi.dropDuplicates(['pLat','pLong'])
 
-#### LABEL #####
-# combine poi data with sample data by crossJoining poi with df
-fulldf = df.crossJoin(poi)
+    print('1. CLEANUP')
+    df.show(20)
+    poi.show()
 
-# define function to calculate haversine distance between two geocordinates
-udfMinDist = udf(calcDist,DoubleType())
+    #### LABEL #####
+    # combine poi data with sample data by crossJoining poi with df
+    fulldf = df.crossJoin(poi)
 
-# create new column as the haversine distance between poi and datapoint
-ndf=fulldf.withColumn("dist", udfMinDist(fulldf.Latitude, fulldf.Longitude,fulldf.pLat,fulldf.pLong))
+    # define function to calculate haversine distance between two geocordinates
+    udfMinDist = udf(calcDist,DoubleType())
 
-# groupby id and find the min distance (closest point), rejoin with combined df to get full data
-mindf = ndf.groupBy('_ID').min('dist').withColumnRenamed("min(dist)","dist").join(ndf,['_ID','dist'])
-mindf = mindf.dropDuplicates(['_ID','dist'])
+    # create new column as the haversine distance between poi and datapoint
+    ndf=fulldf.withColumn("dist", udfMinDist(fulldf.Latitude, fulldf.Longitude,fulldf.pLat,fulldf.pLong))
 
+    # groupby id and find the min distance (closest point), rejoin with combined df to get full data
+    mindf = ndf.groupBy('_ID').min('dist').withColumnRenamed("min(dist)","dist").join(ndf,['_ID','dist'])
+    # drop duplicates (two pois assigned to same request with equal distance)
+    mindf = mindf.dropDuplicates(['_ID','dist'])
 
-##### ANALYSIS #####
+    print('2. LABEL')
+    mindf.show(20)
 
-### 1)
-# groupBy poiid and perform the mean and stddev aggregate functions on the distance column
-df_stats = mindf.groupBy('POIID').agg(
-    _mean(col('dist')).alias('mean'),
-    _stddev(col('dist')).alias('std')
-)
-# # display results
-# for row in df_stats.collect():
-#     id,mean,std = row.POIID,row.mean,row.std
-#     # print poiid, mean, standard deviation
-#     print(id,mean,std)
+    ##### ANALYSIS #####
 
-### 2)
-# get the furthest request for each POI and set that as radius of the circle to include all other requests
-# note that this would mean that all points would be on the same 2d plane (may not be the case in real life)
-maxDistRequests = mindf.groupBy('POIID').max('dist').withColumnRenamed('max(dist)','radius')
-# get # of requests for each POIID
-countRequests = mindf.groupBy('POIID').count()
-
-# join counts and radius
-pInfo = maxDistRequests.join(countRequests,['POIID'])
-
-# create new column 'density' with density = # of requests / area of circle
-pInfo = pInfo.withColumn('density',col('count') / (pi * col('radius')* col('radius')))
+    ### 1)
+    # groupBy poiid and perform the mean and stddev aggregate functions on the distance column
+    df_stats = mindf.groupBy('POIID').agg(
+        _mean(col('dist')).alias('mean'),
+        _stddev(col('dist')).alias('std')
+    )
+    # display results
+    print('3.1 ANALYSIS (mean.stddev)')
+    df_stats.show()
 
 
-###### Data Engineering Tasks ########
-### 4a)
+    ### 2)
+    # get the furthest request for each POI and set that as radius of the circle to include all other requests
+    # note that this would mean that all points would be on the same 2d plane (may not be the case in real life)
+    maxDistRequests = mindf.groupBy('POIID').max('dist').withColumnRenamed('max(dist)','radius')
+    # get # of requests for each POIID
+    countRequests = mindf.groupBy('POIID').count()
 
-# get popularity by city and province.
-popularProv = mindf.groupBy(['province','POIID']).count()
-popularCity = mindf.groupBy(['city','POIID']).count()
+    # join counts and radius
+    pInfo = maxDistRequests.join(countRequests,['POIID'])
 
-# get total population for each cit and province
-totalPopP = mindf.groupBy(['province']).agg(count('_ID').alias("total_prov_requests"))
-totalPopC = mindf.groupBy(['city']).agg(count('_ID').alias("total_city_requests"))
+    # create new column 'density' with density = # of requests / area of circle
+    pInfo = pInfo.withColumn('density',col('count') / (pi * col('radius')* col('radius')))
 
-# get num of cities and num of provinces
-numCity = totalPopC.count()
-numProv = totalPopP.count()
+    print('3.2 ANALYSIS (density)')
+    pInfo.show()
 
-# set total number of requests
-totalRequests = mindf.count()
+    ###### Data Engineering Tasks ########
+    ### 4a)
 
-# find total percentage of requests for each poi
-pInfo = pInfo.withColumn('total_percentage', col('count')/totalRequests)
+    # set total number of requests
+    totalRequests = mindf.count()
 
-# init popularity with 25 points split between request allocations
-popularity = pInfo.rdd.map(lambda x: (x.POIID,x.total_percentage*25))
+    # assume a standard normal distribution on the requests and apply sigmoid to the Z score
+    for row in df_stats.collect():
+        id,mean,std = row.POIID,row.mean,row.std
+        count = int(countRequests.filter(countRequests.POIID == id).collect()[0][0])
+        print(count)
+        # extreme case -> no requests, set to -10
+        if count == 0:
+            popularity[id] = - 10
+        # extreme case 2 -> all requests, set to 10
+        if count == totalRequests:
+            popularity[id] = 10
+        # calculate z score
+        Z = ( count - mean) / std
+        # take sigmoid and map [0,1] to [-10,10]
+        popularity[id] = (sigmoid(Z) * 20) - 10
 
-# add proportional points for province popularity
-totalProvData = popularProv.join(totalPopP, totalPopP.province == popularProv.province).drop(totalPopP.province)
-totalCityData = popularCity.join(totalPopC, totalPopC.city == popularCity.city).drop(totalPopC.city)
 
-totalProvData = totalProvData.withColumn('total_prov_percentage', col('count')/col('total_prov_requests'))
-totalCityData = totalCityData.withColumn('total_city_percentage', col('count')/col('total_city_requests'))
+    print('4a) popularities: ',popularity)
 
-popularity += totalProvData.rdd.map(lambda x: (x.POIID,x.total_prov_percentage*(x.total_prov_requests/totalRequests)*25/numProv))
-popularity += totalCityData.rdd.map(lambda x: (x.POIID,x.total_city_percentage*(x.total_city_requests/totalRequests)*25/numCity))
-sum = {}
-for pair in popularity.collect():
-    p,score = pair[0],pair[1]
-    sum[p] = sum.get(p,0)+score
+    ### 4b)
 
-popularity = {}
-for s in sum:
-    popularity[s]=sum[s]*20/75 - 10
+    # read inputs from the three files.
+    inputs = readF('/tmp/data/question.txt')
+    relations = readF('/tmp/data/relations.txt')
+    tasks = readF('/tmp/data/task_ids.txt')
 
-print('4a) popularities: ',popularity)
+    # if inputs and relations worked, note there is also an IOException try/catch in the readF function
+    if not (len(inputs)==2 and relations):
+        print('error in reading files, unable to proceed with 4b. Ensure that all txt files are in data folder')
+        sys.exit()
 
-### 4b)
+    # take out \n and take substring from index of : + 2 (to include space) to the end of the line, split by comma and turn to list of start points
+    start = set(inputs[0].replace('\n','')[inputs[0].index(':')+2:].split(','))
 
-# read inputs from the three files.
-inputs = readF('/tmp/data/question.txt')
-relations = readF('/tmp/data/relations.txt')
-tasks = readF('/tmp/data/task_ids.txt')
+    # take out \n and take substring from index of : + 2 (to include space) to the end of the line, should only be 1 end point
+    end =  inputs[1].replace('\n','')[inputs[1].index(':')+2:]
 
-# if inputs and relations worked, note there is also an IOException try/catch in the readF function
-if not (len(inputs)==2 and relations):
-    print('error in reading files, unable to proceed with 4b. Ensure that all txt files are in data folder')
-    sys.exit()
+    # make allTasks a set for quick lookup
+    allTasks = set(tasks[0].replace('\n','').split(','))
 
-# take out \n and take substring from index of : + 2 (to include space) to the end of the line, split by comma and turn to list of start points
-start = set(inputs[0].replace('\n','')[inputs[0].index(':')+2:].split(','))
+    # initialize a set defaultdict
+    dependencies = defaultdict(set)
 
-# take out \n and take substring from index of : + 2 (to include space) to the end of the line, should only be 1 end point
-end =  inputs[1].replace('\n','')[inputs[1].index(':')+2:]
+    # for each relation
+    for r in relations:
+        # set pre as the string before the arrow and set the post to be the string after the arrow
+        pre, post = r.split('->')[0],r.split('->')[1].replace('\n','')
+        # add the dependent (pre) under the set of dependencies for the task (post)
+        dependencies[post].add(pre)
 
-# make allTasks a set for quick lookup
-allTasks = set(tasks[0].replace('\n','').split(','))
+    # completed will hold the list of tasks completed by the starting points
+    completed = set()
+    # top start will contain a map of each dependent task before the start to their top/furthest parent start
+    topStart = {}
+    while start:
+        # for each starting point initialize a queue
+        i = start.pop()
+        queue = [i]
+        while queue:
+            # pop queue into current holder
+            curr = queue.pop()
+            # add current to the set of completed tasks
+            completed.add(curr)
+            # set the parent of the current task as the top level starting point
+            topStart[curr] = i
+            # if the current task is in start, remove it (so we don't double recurse)
+            # note, this is more of a problem for topstart than it is for the completed set
+            if curr in start:
+                start.remove(curr)
+            # append any dependent tasks to the queue and continue loop
+            queue.extend(list(dependencies.get(curr,set())))
 
-# initialize a set defaultdict
-dependencies = defaultdict(set)
+    # reset starting set of points
+    start = set(inputs[0].replace('\n','')[inputs[0].index(':')+2:].split(','))
 
-# for each relation
-for r in relations:
-    # set pre as the string before the arrow and set the post to be the string after the arrow
-    pre, post = r.split('->')[0],r.split('->')[1].replace('\n','')
-    # add the dependent (pre) under the set of dependencies for the task (post)
-    dependencies[post].add(pre)
+    # reverse the order of the path returned from the findPath function
+    path = reversed(findPath(start,end,completed,dependencies,topStart,allTasks))
 
-# completed will hold the list of tasks completed by the starting points
-completed = set()
-# top start will contain a map of each dependent task before the start to their top/furthest parent start
-topStart = {}
-while start:
-    # for each starting point initialize a queue
-    i = start.pop()
-    queue = [i]
-    while queue:
-        # pop queue into current holder
-        curr = queue.pop()
-        # add current to the set of completed tasks
-        completed.add(curr)
-        # set the parent of the current task as the top level starting point
-        topStart[curr] = i
-        # if the current task is in start, remove it (so we don't double recurse)
-        # note, this is more of a problem for topstart than it is for the completed set
-        if curr in start:
-            start.remove(curr)
-        # append any dependent tasks to the queue and continue loop
-        queue.extend(list(dependencies.get(curr,set())))
-
-# reset starting set of points
-start = set(inputs[0].replace('\n','')[inputs[0].index(':')+2:].split(','))
-
-# reverse the order of the path returned from the findPath function
-path = reversed(findPath(start,end,completed,dependencies,topStart,allTasks))
-
-# join the reversed path list with commas to print out the full path
-print('4b) path: ',','.join(path))
+    # join the reversed path list with commas to print out the full path
+    print('4b) path: ',','.join(path))

@@ -1,0 +1,12 @@
+Theories (** = main theory)
+-------------------------
+** Requests in DataSample.csv could be users who have indicated interest
+in a product/company/service at a given time and location and the POIs
+could be potential points of interest for said product to be dispensed.
+(popularity would then outline the magnitude of people interested in
+ having the product/company/service at that particular location)
+
+POIs could refer to potential server locations on which customers are individually
+requesting information from the server at a specified time and location.
+Server requests from individuals are allocated to the nearest server for optimal response times.
+(popularity would then outline magnitude of requests/load allocated to a given server)
