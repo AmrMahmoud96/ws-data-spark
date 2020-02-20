@@ -209,16 +209,20 @@ if __name__ == "__main__":
     pInfo.show()
 
     ###### Data Engineering Tasks ########
+    print('4. DATA ENGINEERING')
     ### 4a)
 
     # set total number of requests
     totalRequests = mindf.count()
 
+    # init popularity
+    popularity = {}
+
     # assume a standard normal distribution on the requests and apply sigmoid to the Z score
     for row in df_stats.collect():
         id,mean,std = row.POIID,row.mean,row.std
-        count = int(countRequests.filter(countRequests.POIID == id).collect()[0][0])
-        print(count)
+        # get number of requests per POIID
+        count = float(countRequests.filter(countRequests.POIID == id).collect()[0][1])
         # extreme case -> no requests, set to -10
         if count == 0:
             popularity[id] = - 10
