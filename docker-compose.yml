@@ -27,6 +27,7 @@ master:
 worker:
   image: gettyimages/spark
   command: bin/spark-class org.apache.spark.deploy.worker.Worker spark://master:7077
+  container_name: sparky
   hostname: worker
   environment:
     SPARK_CONF_DIR: /conf
