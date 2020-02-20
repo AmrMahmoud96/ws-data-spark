@@ -226,9 +226,11 @@ if __name__ == "__main__":
         # extreme case -> no requests, set to -10
         if count == 0:
             popularity[id] = - 10
+            continue
         # extreme case 2 -> all requests, set to 10
         if count == totalRequests:
             popularity[id] = 10
+            continue
         # calculate z score
         Z = ( count - mean) / std
         # take sigmoid and map [0,1] to [-10,10]
